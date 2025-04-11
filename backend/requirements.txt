@@ -1,0 +1,11 @@
+requests
+beautifulsoup4
+langchain
+langchain-openai
+openai
+python-dotenv
+fastapi
+uvicorn
+pydantic
+tiktoken
+sentence-transformers==2.2.2
