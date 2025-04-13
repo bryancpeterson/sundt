@@ -5,13 +5,17 @@ from datetime import datetime
 import time
 from typing import Dict, Any, List
 from local_vector_search import LocalVectorSearchEngine
-from langchain.prompts import PromptTemplate
-from langchain.chat_models import ChatOpenAI
-from langchain.chains import LLMChain
+from langchain_core.prompts import PromptTemplate
+from langchain_openai import ChatOpenAI
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnablePassthrough
 from dotenv import load_dotenv
 
 # Load environment variables from .env file (contains OPENAI_API_KEY)
 load_dotenv()
+
+# Fix HuggingFace tokenizers parallelism warning
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 class AwardsAgent:
     """Agent specialized for retrieving award information"""
@@ -25,8 +29,8 @@ class AwardsAgent:
         self.temperature = temperature
         self.llm = ChatOpenAI(model_name=model_name, temperature=temperature)
         
-        # Set up the prompt template
-        self.prompt_template = PromptTemplate(
+        # Set up the enhanced prompt template with better instructions
+        self.prompt = PromptTemplate(
             input_variables=["query", "award_data"],
             template="""
             You are the Awards Agent for Sundt Construction. Your role is to provide 
@@ -37,17 +41,26 @@ class AwardsAgent:
             AWARD DATA:
             {award_data}
             
-            Based on the information provided, respond to the user's query about Sundt's awards.
-            Present the information in a clear, concise, and helpful manner.
-            If the provided data doesn't contain relevant information to answer the query,
-            say that you don't have that specific information about Sundt's awards.
+            Instructions:
+            1. Focus on directly answering the user's question using only the provided award data
+            2. If multiple awards are relevant, organize them chronologically or by significance
+            3. Include specific details like organizations, dates, and categories when available
+            4. Highlight any patterns in Sundt's recognition (e.g., recurring awards in safety)
+            5. If the provided data doesn't contain relevant information to answer the query,
+               clearly state that you don't have that specific information
+            6. Format your response in a clear, professional manner
             
             RESPONSE:
             """
         )
         
-        # Create the chain
-        self.chain = LLMChain(llm=self.llm, prompt=self.prompt_template)
+        # Create the runnable chain using modern pattern
+        self.chain = (
+            {"query": RunnablePassthrough(), "award_data": RunnablePassthrough()}
+            | self.prompt
+            | self.llm
+            | StrOutputParser()
+        )
         
         # Set up metrics tracking
         self.metrics_file = os.path.join("data", "awards_agent_metrics.json")
@@ -152,6 +165,56 @@ class AwardsAgent:
         
         return (sanitized, False)
     
+    def _format_award_info(self, award, index):
+        """Format award information with all available fields"""
+        fields_mapping = {
+            "title": "Title",
+            "organization": "Organization",
+            "category": "Category",
+            "award_type": "Award Type",
+            "description": "Description",
+            "location": "Location",
+            "date": "Date",
+            "year": "Year",
+        }
+        
+        award_info = [f"AWARD {index}:"]
+        
+        # Add title first (always)
+        award_info.append(f"Title: {award.get('title', 'Untitled')}")
+        
+        # Add all other available fields in a consistent order
+        for field, display_name in fields_mapping.items():
+            if field != "title" and field in award and award[field]:
+                award_info.append(f"{display_name}: {award[field]}")
+        
+        # Add project information if available
+        if "projects" in award and award["projects"]:
+            projects = award.get("projects")
+            if isinstance(projects, list):
+                project_titles = [p.get("title", "Unnamed Project") for p in projects]
+                award_info.append(f"Related Projects: {', '.join(project_titles)}")
+        
+        return "\n".join(award_info)
+    
+    def _process_llm_response(self, response, query, awards):
+        """Process LLM response to ensure consistency"""
+        # Check if response is empty or error
+        if not response or len(response.strip()) < 10:
+            return f"I couldn't generate a proper response about Sundt awards related to '{query}'. Please try a different query."
+            
+        # Add a standard prefix for consistency
+        prefix = f"Based on Sundt Construction's awards database, here's information about '{query}':\n\n"
+        
+        # Add award count for transparency
+        if awards:
+            footer = f"\n\nThis information is based on {len(awards)} relevant awards in Sundt's history."
+        else:
+            footer = "\n\nI couldn't find specific Sundt awards matching your query in our database."
+            
+        # Combine parts
+        return prefix + response + footer
+    
     def get_metrics(self) -> Dict[str, Any]:
         """Get current metrics"""
         return self._load_metrics()
@@ -179,50 +242,42 @@ class AwardsAgent:
                 result = {
                     "query": sanitized_query,
                     "response": "I couldn't find any Sundt Construction awards matching your query. Would you like to try a different search term?",
+                    "awards": [],  # Add empty array to satisfy API validation
                     "success": False,
                     "reason": "No matching awards found"
                 }
             else:
-                # Format award data for the prompt
+                # Format award data for the prompt using the new comprehensive formatter
                 award_data = []
                 for i, award in enumerate(awards, 1):
-                    award_info = [f"AWARD {i}:"]
-                    award_info.append(f"Title: {award.get('title', 'Untitled')}")
-                    
-                    for field in ["organization", "category", "award_type", "description", "location"]:
-                        if field in award and award[field]:
-                            award_info.append(f"{field.title()}: {award.get(field)}")
-                    
-                    # Add date/year if available
-                    if "date" in award:
-                        award_info.append(f"Date: {award.get('date')}")
-                    elif "year" in award:
-                        award_info.append(f"Year: {award.get('year')}")
-                    
-                    # Add project information if available
-                    if "projects" in award and award["projects"]:
-                        projects = award.get("projects")
-                        if isinstance(projects, list):
-                            project_titles = [p.get("title", "Unnamed Project") for p in projects]
-                            award_info.append(f"Related Projects: {', '.join(project_titles)}")
-                    
-                    award_info.append("")
-                    award_data.append("\n".join(award_info))
+                    award_info = self._format_award_info(award, i)
+                    award_data.append(award_info)
                 
                 # Generate response using LLM
                 try:
-                    response = self.chain.run(query=sanitized_query, award_data="\n".join(award_data))
+                    # Use the modern chain pattern
+                    raw_response = self.chain.invoke({
+                        "query": sanitized_query,
+                        "award_data": "\n\n".join(award_data)
+                    })
+                    
+                    # With StrOutputParser(), response should always be a string
+                    
+                    # Process the response for consistency
+                    processed_response = self._process_llm_response(raw_response, sanitized_query, awards)
                     
                     result = {
                         "query": sanitized_query,
-                        "response": response,
+                        "response": processed_response,
                         "awards": awards,
                         "success": True
                     }
                 except Exception as e:
+                    print(f"Error processing award query: {e}")
                     result = {
                         "query": sanitized_query,
                         "response": "I encountered an error while processing your request about Sundt awards. Please try again.",
+                        "awards": awards,  # Include awards to satisfy API validation
                         "success": False,
                         "reason": str(e)
                     }
