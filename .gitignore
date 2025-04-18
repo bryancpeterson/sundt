@@ -59,6 +59,9 @@ backend/.cache/
 *.bak
 *.tmp
 *.pid
+venv/
+.venv/
+env/
 
 # macOS
 **/.DS_Store
