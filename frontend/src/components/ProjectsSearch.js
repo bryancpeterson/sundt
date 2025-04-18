@@ -36,71 +36,150 @@ function ProjectsSearch() {
   };
 
   return (
-    <div className="search-container">
-      <h2>Projects Search</h2>
-      <p>Ask questions about Sundt Construction projects</p>
-      
-      <form className="search-form" onSubmit={handleSubmit}>
-        <input 
-          type="text" 
-          value={query} 
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="E.g., Tell me about water treatment projects"
-        />
-        <button type="submit" disabled={isLoading}>
-          {isLoading ? 'Searching...' : 'Search'}
-        </button>
-      </form>
+    <div className="container">
+      <div className="row mb-4">
+        <div className="col-lg-12">
+          <h2>Projects Search</h2>
+          <p className="text-muted">Ask questions about Sundt Construction projects</p>
+          
+          <form onSubmit={handleSubmit}>
+            <div className="input-group mb-3">
+              <input 
+                type="text" 
+                className="form-control"
+                value={query} 
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="E.g., Tell me about water treatment projects in Arizona"
+                aria-label="Search query"
+              />
+              <button 
+                className="btn btn-primary" 
+                type="submit" 
+                disabled={isLoading}
+              >
+                {isLoading ? (
+                  <>
+                    <span className="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                    <span className="ms-2">Searching...</span>
+                  </>
+                ) : 'Search'}
+              </button>
+            </div>
+          </form>
 
-      {error && <div className="error">{error}</div>}
+          {error && (
+            <div className="alert alert-danger" role="alert">
+              {error}
+            </div>
+          )}
 
-      {isLoading && <div className="loading">Searching for projects...</div>}
-
-      {result && (
-        <div className="results-container">
-          <div className="response">
-            <h3>Response:</h3>
-            <p>{result.response}</p>
-          </div>
-
-          {result.projects && result.projects.length > 0 && (
-            <>
-              <h3>Matching Projects ({result.projects.length})</h3>
-              <div className="results-list">
-                {result.projects.map((project, index) => (
-                  <div className="result-card" key={index}>
-                    {project.image_url && (
-                      <img src={project.image_url} alt={project.title} />
-                    )}
-                    <div className="result-card-content">
-                      <h3>{project.title}</h3>
-                      
-                      <div className="result-metadata">
-                        {project.location && <p><strong>Location:</strong> {project.location}</p>}
-                        {project.client && <p><strong>Client:</strong> {project.client}</p>}
-                        {project.value && <p><strong>Value:</strong> {project.value}</p>}
-                      </div>
-                      
-                      {project.description && (
-                        <p>{project.description.length > 150 
-                          ? `${project.description.substring(0, 150)}...` 
-                          : project.description}
-                        </p>
-                      )}
-                      
-                      {project.url && (
-                        <a href={project.url} target="_blank" rel="noopener noreferrer">
-                          View Project
-                        </a>
-                      )}
-                    </div>
-                  </div>
-                ))}
+          {isLoading && !error && (
+            <div className="d-flex justify-content-center my-5">
+              <div className="spinner-border text-primary" role="status">
+                <span className="visually-hidden">Loading...</span>
               </div>
-            </>
+            </div>
+          )}
+
+          {result && (
+            <div className="mt-4">
+              <div className="card mb-4">
+                <div className="card-header bg-primary text-white">
+                  <h4 className="mb-0">Response</h4>
+                </div>
+                <div className="card-body">
+                  <p className="card-text">{result.response}</p>
+                  <div className="d-flex justify-content-end">
+                    <small className="text-muted">
+                      Query time: {result.execution_time.toFixed(2)} seconds
+                    </small>
+                  </div>
+                </div>
+              </div>
+
+              {result.projects && result.projects.length > 0 && (
+                <>
+                  <h4 className="mb-3">Matching Projects ({result.projects.length})</h4>
+                  <div className="row">
+                    {result.projects.map((project, index) => (
+                      <div className="col-md-6 col-lg-4 mb-4" key={index}>
+                        <div className="card h-100 shadow-sm">
+                          {project.image_url && (
+                            <img 
+                              src={project.image_url} 
+                              className="card-img-top"
+                              alt={project.title} 
+                              style={{height: '200px', objectFit: 'cover'}}
+                            />
+                          )}
+                          <div className="card-body">
+                            <h5 className="card-title">{project.title}</h5>
+                            <div className="card-text">
+                              <div className="mb-2">
+                                {project.location && (
+                                  <p className="mb-1"><strong>Location:</strong> {project.location}</p>
+                                )}
+                                {project.client && (
+                                  <p className="mb-1"><strong>Client:</strong> {project.client}</p>
+                                )}
+                                {project.value && (
+                                  <p className="mb-1"><strong>Value:</strong> {project.value}</p>
+                                )}
+                                {project.delivery_method && (
+                                  <p className="mb-1"><strong>Delivery Method:</strong> {project.delivery_method}</p>
+                                )}
+                              </div>
+                              
+                              {project.description && (
+                                <p className="text-muted">
+                                  {project.description.length > 150 
+                                    ? `${project.description.substring(0, 150)}...` 
+                                    : project.description}
+                                </p>
+                              )}
+                              
+                              {project.features && project.features.length > 0 && (
+                                <div className="mt-2">
+                                  <p className="mb-1"><strong>Features:</strong></p>
+                                  <ul className="list-group list-group-flush">
+                                    {Array.isArray(project.features) 
+                                      ? project.features.slice(0, 3).map((feature, idx) => (
+                                          <li key={idx} className="list-group-item py-1 px-0 border-0">{feature}</li>
+                                        ))
+                                      : <li className="list-group-item py-1 px-0 border-0">{project.features}</li>
+                                    }
+                                    {Array.isArray(project.features) && project.features.length > 3 && (
+                                      <li className="list-group-item py-1 px-0 border-0 text-primary">
+                                        +{project.features.length - 3} more features
+                                      </li>
+                                    )}
+                                  </ul>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                          {project.url && (
+                            <div className="card-footer bg-white border-top-0">
+                              <a 
+                                href={project.url} 
+                                className="btn btn-outline-primary btn-sm"
+                                target="_blank" 
+                                rel="noopener noreferrer"
+                              >
+                                View project details →
+                              </a>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
           )}
         </div>
-      )}
+      </div>
     </div>
   );
 }

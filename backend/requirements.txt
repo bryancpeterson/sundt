@@ -9,3 +9,4 @@ uvicorn
 pydantic
 tiktoken
 sentence-transformers==2.2.2
+huggingface_hub<0.13.0

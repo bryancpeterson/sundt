@@ -36,7 +36,7 @@ class LocalVectorSearchEngine:
             self.embeddings = self._load_or_generate_embeddings(use_cached_embeddings)
         else:
             # Dummy embeddings for testing if library isn't available
-            self.embeddings = {"projects": [], "awards": [], "created_at": 0}
+            self.embeddings = {"projects": np.array([]), "awards": np.array([]), "created_at": 0}
     
     def _load_json_data(self, file_path: str, key: str) -> List[Dict[str, Any]]:
         """Load JSON data from file"""
@@ -62,8 +62,8 @@ class LocalVectorSearchEngine:
                     data = json.load(f)
                     
                     # Convert lists back to numpy arrays for efficiency
-                    data["projects"] = [np.array(vec) for vec in data["projects"]]
-                    data["awards"] = [np.array(vec) for vec in data["awards"]]
+                    data["projects"] = np.array(data["projects"])
+                    data["awards"] = np.array(data["awards"])
                     
                     return data
             except Exception as e:
@@ -73,8 +73,8 @@ class LocalVectorSearchEngine:
         print("Generating new embeddings...")
         start_time = time.time()
         embeddings = {
-            "projects": [],
-            "awards": [],
+            "projects": None,
+            "awards": None,
             "created_at": time.time()
         }
         
@@ -84,9 +84,9 @@ class LocalVectorSearchEngine:
             text = self._prepare_text_for_embedding(project, "project")
             project_texts.append(text)
         
-        # Batch processing for efficiency
+        # Batch processing for efficiency with normalize_embeddings=True for optimization
         print(f"Generating embeddings for {len(project_texts)} projects...")
-        embeddings["projects"] = self.model.encode(project_texts)
+        embeddings["projects"] = self.model.encode(project_texts, normalize_embeddings=True)
         
         # Generate award embeddings
         award_texts = []
@@ -94,14 +94,14 @@ class LocalVectorSearchEngine:
             text = self._prepare_text_for_embedding(award, "award")
             award_texts.append(text)
         
-        # Batch processing for efficiency
+        # Batch processing for efficiency with normalize_embeddings=True for optimization
         print(f"Generating embeddings for {len(award_texts)} awards...")
-        embeddings["awards"] = self.model.encode(award_texts)
+        embeddings["awards"] = self.model.encode(award_texts, normalize_embeddings=True)
         
         # Convert numpy arrays to lists for JSON serialization
         serializable_embeddings = {
-            "projects": [vec.tolist() for vec in embeddings["projects"]],
-            "awards": [vec.tolist() for vec in embeddings["awards"]],
+            "projects": embeddings["projects"].tolist(),
+            "awards": embeddings["awards"].tolist(),
             "created_at": embeddings["created_at"]
         }
         
@@ -169,20 +169,18 @@ class LocalVectorSearchEngine:
             print("Warning: Vector search unavailable without sentence-transformers library")
             return []
             
-        # Get embedding for query
-        query_vector = self.model.encode(query)
+        # Get embedding for query and normalize it
+        query_vector = self.model.encode(query, normalize_embeddings=True)
         
-        # Calculate similarity with all projects
-        similarities = []
-        for project_vector in self.embeddings["projects"]:
-            # Calculate cosine similarity
-            similarity = np.dot(query_vector, project_vector) / (np.linalg.norm(query_vector) * np.linalg.norm(project_vector))
-            similarities.append(float(similarity))
+        # Calculate similarity with all projects using vectorized operations
+        # Since both query and document vectors are normalized, dot product equals cosine similarity
+        similarities = np.dot(query_vector, self.embeddings["projects"].T)
         
-        # Create list of (index, similarity) tuples
-        project_scores = [(i, score) for i, score in enumerate(similarities)]
+        # Create an array of indices
+        indices = np.arange(len(similarities))
         
-        # Sort by similarity (descending)
+        # Create list of (index, similarity) tuples and sort by similarity (descending)
+        project_scores = list(zip(indices, similarities))
         project_scores.sort(key=lambda x: x[1], reverse=True)
         
         # Filter by threshold and get top results
@@ -190,7 +188,8 @@ class LocalVectorSearchEngine:
         for i, score in project_scores:
             if score >= threshold and len(results) < limit:
                 project = self.projects[i].copy()
-                project['_score'] = score  # Add score for debugging
+                project['_score'] = float(score)  # Add score for debugging
+                project['_rank'] = len(results) + 1  # Add rank for presentation
                 results.append(project)
         
         return results
@@ -201,20 +200,18 @@ class LocalVectorSearchEngine:
             print("Warning: Vector search unavailable without sentence-transformers library")
             return []
             
-        # Get embedding for query
-        query_vector = self.model.encode(query)
+        # Get embedding for query and normalize it
+        query_vector = self.model.encode(query, normalize_embeddings=True)
         
-        # Calculate similarity with all awards
-        similarities = []
-        for award_vector in self.embeddings["awards"]:
-            # Calculate cosine similarity
-            similarity = np.dot(query_vector, award_vector) / (np.linalg.norm(query_vector) * np.linalg.norm(award_vector))
-            similarities.append(float(similarity))
+        # Calculate similarity with all awards using vectorized operations
+        # Since both query and document vectors are normalized, dot product equals cosine similarity
+        similarities = np.dot(query_vector, self.embeddings["awards"].T)
         
-        # Create list of (index, similarity) tuples
-        award_scores = [(i, score) for i, score in enumerate(similarities)]
+        # Create an array of indices
+        indices = np.arange(len(similarities))
         
-        # Sort by similarity (descending)
+        # Create list of (index, similarity) tuples and sort by similarity (descending)
+        award_scores = list(zip(indices, similarities))
         award_scores.sort(key=lambda x: x[1], reverse=True)
         
         # Filter by threshold and get top results
@@ -222,12 +219,13 @@ class LocalVectorSearchEngine:
         for i, score in award_scores:
             if score >= threshold and len(results) < limit:
                 award = self.awards[i].copy()
-                award['_score'] = score  # Add score for debugging
+                award['_score'] = float(score)  # Add score for debugging
+                award['_rank'] = len(results) + 1  # Add rank for presentation
                 results.append(award)
         
         return results
     
-    def search(self, query: str, type: str = "all", limit: int = 10) -> Dict[str, Union[List[Dict[str, Any]], int]]:
+    def search(self, query: str, type: str = "all", limit: int = 10, threshold: float = 0.5) -> Dict[str, Union[List[Dict[str, Any]], int]]:
         """
         Search for projects and/or awards matching the query
         
@@ -235,6 +233,7 @@ class LocalVectorSearchEngine:
             query: Search terms
             type: "projects", "awards", or "all"
             limit: Maximum number of results to return for each type
+            threshold: Minimum similarity score (0-1) to include in results
             
         Returns:
             Dictionary with results and timing info
@@ -247,12 +246,12 @@ class LocalVectorSearchEngine:
         }
         
         if type == "projects" or type == "all":
-            projects = self.search_projects(query, limit)
+            projects = self.search_projects(query, limit, threshold)
             results["projects"] = projects
             results["project_count"] = len(projects)
             
         if type == "awards" or type == "all":
-            awards = self.search_awards(query, limit)
+            awards = self.search_awards(query, limit, threshold)
             results["awards"] = awards
             results["award_count"] = len(awards)
         
@@ -290,6 +289,7 @@ if __name__ == "__main__":
                 print(f"     Location: {project['location']}")
             if "_score" in project:
                 print(f"     Score: {project['_score']:.3f}")
+                print(f"     Rank: {project['_rank']}")
         
         print("\nTop Awards:")
         for i, award in enumerate(results.get("awards", [])):
@@ -298,3 +298,4 @@ if __name__ == "__main__":
                 print(f"     Organization: {award['organization']}")
             if "_score" in award:
                 print(f"     Score: {award['_score']:.3f}")
+                print(f"     Rank: {award['_rank']}")

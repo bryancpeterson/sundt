@@ -1,9 +1,10 @@
 import os
 import json
 import re
-from datetime import datetime
 import time
-from typing import Dict, Any, List
+import random
+from datetime import datetime
+from typing import Dict, Any, List, Optional
 from local_vector_search import LocalVectorSearchEngine
 from langchain_core.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI
@@ -197,6 +198,236 @@ class AwardsAgent:
         
         return "\n".join(award_info)
     
+    def _prepare_context(self, awards, query, max_tokens=3500):
+        """Dynamically prepare context based on token count and relevance"""
+        context = []
+        token_count = 0
+        
+        # Prioritize awards based on relevance score
+        sorted_awards = sorted(awards, key=lambda x: x.get('_score', 0), reverse=True)
+        
+        for i, award in enumerate(sorted_awards, 1):
+            # Format the award info
+            award_info = self._format_award_info(award, i)
+            
+            # Estimate token count (approximation: 1 token ≈ 4 chars in English)
+            estimated_tokens = len(award_info) // 4
+            
+            # Check if adding this would exceed our limit
+            if token_count + estimated_tokens > max_tokens:
+                # Try a condensed version for important awards
+                if i <= 3:  # First 3 awards are most relevant
+                    condensed_info = self._format_condensed_award(award, i)
+                    condensed_tokens = len(condensed_info) // 4
+                    
+                    if token_count + condensed_tokens <= max_tokens:
+                        context.append(condensed_info)
+                        token_count += condensed_tokens
+                continue
+                
+            # Add the full award info
+            context.append(award_info)
+            token_count += estimated_tokens
+        
+        # If we couldn't add any awards (very unlikely), add at least one in condensed form
+        if not context and awards:
+            condensed_info = self._format_condensed_award(awards[0], 1)
+            context.append(condensed_info)
+        
+        return "\n\n".join(context)
+    
+    def _format_condensed_award(self, award, index):
+        """Create a condensed version of award info with only essential fields"""
+        # Include only the most important fields for condensed view
+        essential_fields = ["title", "organization", "category", "date", "year"]
+        
+        condensed = [f"AWARD {index} (SUMMARY):"]
+        condensed.append(f"Title: {award.get('title', 'Untitled')}")
+        
+        # Add organization if available
+        if "organization" in award and award["organization"]:
+            condensed.append(f"Organization: {award['organization']}")
+        
+        # Add category if available
+        if "category" in award and award["category"]:
+            condensed.append(f"Category: {award['category']}")
+        
+        # Add date or year if available
+        if "date" in award and award["date"]:
+            condensed.append(f"Date: {award['date']}")
+        elif "year" in award and award["year"]:
+            condensed.append(f"Year: {award['year']}")
+        
+        # Add a very brief description snippet if available
+        if "description" in award and award["description"]:
+            desc = award["description"]
+            # Get first sentence or first 100 chars
+            brief = desc.split('.')[0] if '.' in desc[:150] else desc[:100]
+            condensed.append(f"Brief: {brief}...")
+        
+        return "\n".join(condensed)
+    
+    def _extract_keywords(self, query):
+        """
+        PHASE 3: Extract important keywords from query for hybrid search
+        """
+        # Remove common stopwords
+        stopwords = {'the', 'a', 'an', 'in', 'on', 'at', 'by', 'for', 'with', 'about', 'to', 'of', 'is', 'are', 'was', 'were'}
+        
+        # Extract words and convert to lowercase
+        words = re.findall(r'\b\w+\b', query.lower())
+        
+        # Filter out stopwords and short words
+        keywords = [word for word in words if word not in stopwords and len(word) > 2]
+        
+        return keywords
+    
+    def _hybrid_search(self, query, limit=15):
+        """
+        PHASE 3: Hybrid Search
+        Combine vector search with keyword matching for better relevance
+        """
+        # Get vector search results with higher limit to provide more candidates for re-ranking
+        vector_results = self.search_engine.search_awards(query, limit=limit)
+        
+        # Extract key terms for keyword matching
+        keywords = self._extract_keywords(query)
+        
+        if not keywords or not vector_results:
+            return vector_results
+        
+        # Boost scores for keyword matches
+        for result in vector_results:
+            keyword_matches = 0
+            text_fields = ['title', 'description', 'organization', 'category']
+            
+            # Check each keyword against each field
+            for keyword in keywords:
+                for field in text_fields:
+                    if field in result and result[field] and isinstance(result[field], str):
+                        field_text = result[field].lower()
+                        # Exact match gets more points than partial match
+                        if re.search(r'\b' + re.escape(keyword) + r'\b', field_text):
+                            # Title matches are most important
+                            if field == 'title':
+                                keyword_matches += 3
+                            # Organization and category are secondary
+                            elif field in ['organization', 'category']:
+                                keyword_matches += 2
+                            # Description is tertiary
+                            else:
+                                keyword_matches += 1
+            
+            # Apply keyword boost (10% per match)
+            boost_factor = 1 + (keyword_matches * 0.1)
+            result['_score'] = result.get('_score', 0) * boost_factor
+            # Add a keyword_matches field for debugging
+            result['_keyword_matches'] = keyword_matches
+        
+        # Re-sort by adjusted scores
+        vector_results.sort(key=lambda x: x.get('_score', 0), reverse=True)
+        return vector_results[:limit]
+    
+    def _rerank_results(self, results, query):
+        """
+        PHASE 3: Result Re-ranking
+        Re-rank search results based on query terms and metadata
+        """
+        # Convert query to lowercase for matching
+        query_lower = query.lower()
+        query_terms = set(re.findall(r'\b\w+\b', query_lower))
+        
+        # Define important fields with weights
+        fields = {
+            'title': 3.0,
+            'organization': 2.5,
+            'category': 2.0,
+            'description': 1.0,
+            'date': 1.5,
+            'year': 1.5
+        }
+        
+        # Look for special award types/organizations
+        award_types = ["safety", "quality", "environmental", "innovation", "excellence"]
+        has_award_type_focus = any(term in query_lower for term in award_types)
+        
+        # Look for date/year patterns
+        year_pattern = r'\b(19|20)\d{2}\b'
+        year_match = re.search(year_pattern, query)
+        year_term = year_match.group(0) if year_match else None
+        
+        # Look for organization names
+        org_pattern = r'\b(ENR|Associated Builders|ABC|AGC|DBIA|OSHA)\b'
+        org_match = re.search(org_pattern, query, re.IGNORECASE)
+        org_term = org_match.group(0).lower() if org_match else None
+        
+        for result in results:
+            # Start with base score
+            boost = 0
+            
+            # Check for exact matches in each field
+            for field, weight in fields.items():
+                if field in result and result[field]:
+                    field_text = str(result[field]).lower()
+                    # Count matching terms
+                    matches = sum(1 for term in query_terms if term in field_text)
+                    boost += matches * weight
+                    
+                    # Special handling for year focus
+                    if year_term and field in ['date', 'year'] and year_term in field_text:
+                        boost += 5.0  # Strong boost for year matches
+                    
+                    # Special handling for organization focus
+                    if org_term and field == 'organization' and org_term in field_text:
+                        boost += 4.0  # Strong boost for organization matches
+                    
+                    # Special handling for award type focus
+                    if has_award_type_focus and field in ['title', 'category']:
+                        for award_type in award_types:
+                            if award_type in field_text:
+                                boost += 3.0  # Strong boost for matching award types
+                                break
+            
+            # Apply boost to score
+            result['_score'] = result.get('_score', 0) * (1 + boost * 0.1)
+            # Store the boost amount for debugging
+            result['_boost'] = boost
+        
+        # Re-sort by adjusted score
+        results.sort(key=lambda x: x.get('_score', 0), reverse=True)
+        return results
+    
+    def _get_llm_response(self, query, context, max_retries=2):
+        """
+        PHASE 4: Error Handling with Retry Logic
+        Retry mechanism for LLM calls with exponential backoff
+        """
+        retries = 0
+        while retries <= max_retries:
+            try:
+                response = self.chain.invoke({
+                    "query": query,
+                    "award_data": context
+                })
+                return response
+            except Exception as e:
+                retries += 1
+                print(f"LLM error (attempt {retries}/{max_retries+1}): {e}")
+                
+                # Only retry if we haven't exceeded max_retries
+                if retries <= max_retries:
+                    # Exponential backoff with jitter
+                    backoff_time = (2 ** retries) + random.uniform(0, 1)
+                    print(f"Retrying in {backoff_time:.2f} seconds...")
+                    time.sleep(backoff_time)
+                else:
+                    # Log the failure after all retries are exhausted
+                    print(f"All {max_retries+1} attempts failed")
+                    raise
+        
+        # This should not be reached due to the raise above, but just in case
+        raise Exception("All retry attempts failed")
+    
     def _process_llm_response(self, response, query, awards):
         """Process LLM response to ensure consistency"""
         # Check if response is empty or error
@@ -230,57 +461,64 @@ class AwardsAgent:
             result = {
                 "query": query,
                 "response": "I can only provide information about Sundt Construction awards. Please rephrase your query.",
+                "awards": [],  # Add empty array to satisfy API validation
                 "success": False,
                 "reason": "Potential prompt injection detected"
             }
         else:
-            # Search for relevant awards
-            search_results = self.search_engine.search(sanitized_query, "awards", limit=5)
-            awards = search_results.get("awards", [])
-            
-            if not awards:
+            try:
+                # PHASE 3: Use hybrid search and re-ranking instead of simple search
+                search_results = self._hybrid_search(sanitized_query, limit=15)
+                
+                # Apply re-ranking to further improve relevance
+                reranked_awards = self._rerank_results(search_results, sanitized_query)
+                
+                # Take the top 10 after re-ranking
+                awards = reranked_awards[:10]
+                
+                if not awards:
+                    result = {
+                        "query": sanitized_query,
+                        "response": "I couldn't find any Sundt Construction awards matching your query. Would you like to try a different search term?",
+                        "awards": [],  # Add empty array to satisfy API validation
+                        "success": False,
+                        "reason": "No matching awards found"
+                    }
+                else:
+                    # Format award data using dynamic context management
+                    award_context = self._prepare_context(awards, sanitized_query)
+                    
+                    # PHASE 4: Use the retry mechanism for LLM calls
+                    try:
+                        raw_response = self._get_llm_response(sanitized_query, award_context)
+                        
+                        # Process the response for consistency
+                        processed_response = self._process_llm_response(raw_response, sanitized_query, awards)
+                        
+                        result = {
+                            "query": sanitized_query,
+                            "response": processed_response,
+                            "awards": awards,
+                            "success": True
+                        }
+                    except Exception as e:
+                        print(f"Error processing award query after retries: {e}")
+                        result = {
+                            "query": sanitized_query,
+                            "response": "I encountered an error while processing your request about Sundt awards. Please try again.",
+                            "awards": awards,  # Include awards to satisfy API validation
+                            "success": False,
+                            "reason": str(e)
+                        }
+            except Exception as e:
+                print(f"Error in search or pre-processing: {e}")
                 result = {
                     "query": sanitized_query,
-                    "response": "I couldn't find any Sundt Construction awards matching your query. Would you like to try a different search term?",
-                    "awards": [],  # Add empty array to satisfy API validation
+                    "response": "I encountered an error while searching for Sundt awards. Please try again.",
+                    "awards": [],  # Empty array for API validation
                     "success": False,
-                    "reason": "No matching awards found"
+                    "reason": str(e)
                 }
-            else:
-                # Format award data for the prompt using the new comprehensive formatter
-                award_data = []
-                for i, award in enumerate(awards, 1):
-                    award_info = self._format_award_info(award, i)
-                    award_data.append(award_info)
-                
-                # Generate response using LLM
-                try:
-                    # Use the modern chain pattern
-                    raw_response = self.chain.invoke({
-                        "query": sanitized_query,
-                        "award_data": "\n\n".join(award_data)
-                    })
-                    
-                    # With StrOutputParser(), response should always be a string
-                    
-                    # Process the response for consistency
-                    processed_response = self._process_llm_response(raw_response, sanitized_query, awards)
-                    
-                    result = {
-                        "query": sanitized_query,
-                        "response": processed_response,
-                        "awards": awards,
-                        "success": True
-                    }
-                except Exception as e:
-                    print(f"Error processing award query: {e}")
-                    result = {
-                        "query": sanitized_query,
-                        "response": "I encountered an error while processing your request about Sundt awards. Please try again.",
-                        "awards": awards,  # Include awards to satisfy API validation
-                        "success": False,
-                        "reason": str(e)
-                    }
         
         # Calculate execution time
         execution_time = time.time() - start_time
