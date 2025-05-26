@@ -4,7 +4,6 @@ from projects_agent import ProjectsAgent
 from awards_agent import AwardsAgent
 import time
 
-# Load environment variables
 dotenv.load_dotenv()
 
 class SundtCLI:
@@ -16,7 +15,6 @@ class SundtCLI:
         print("Agents loaded successfully!")
     
     def run(self):
-        """Run the interactive CLI"""
         print("\n" + "="*60)
         print("               SUNDT CONSTRUCTION RAG SYSTEM")
         print("="*60)
@@ -41,11 +39,7 @@ class SundtCLI:
                     break
                     
                 if user_input.lower() == "help":
-                    print("\nAvailable commands:")
-                    print("  projects <query> - Search for information about Sundt projects")
-                    print("  awards <query>   - Search for information about Sundt awards")
-                    print("  help             - Show this help message")
-                    print("  exit             - Exit the application")
+                    self._show_help()
                     continue
                 
                 # Parse command and query
@@ -70,8 +64,18 @@ class SundtCLI:
             except Exception as e:
                 print(f"Error: {str(e)}")
     
+    def _show_help(self):
+        print("\nAvailable commands:")
+        print("  projects <query> - Search for information about Sundt projects")
+        print("  awards <query>   - Search for information about Sundt awards")
+        print("  help             - Show this help message")
+        print("  exit             - Exit the application")
+        print("\nExample queries:")
+        print("  projects tell me about hospital projects in Arizona")
+        print("  awards what safety awards has Sundt won?")
+        print("  projects show me bridge construction work")
+    
     def _handle_projects_query(self, query):
-        """Process a query for the Projects agent"""
         print(f"\nSearching for projects related to: {query}")
         print("Processing...")
         
@@ -85,17 +89,22 @@ class SundtCLI:
             print("\nRESPONSE:")
             print(result["response"])
             
-            # List the projects found
+            # Show the projects that were found
             if result.get("projects"):
                 print("\nProjects found:")
                 for i, project in enumerate(result["projects"], 1):
-                    print(f"  {i}. {project.get('title', 'Untitled')}")
+                    title = project.get('title', 'Untitled')
+                    location = f" ({project.get('location', 'Location unknown')})" if 'location' in project else ""
+                    print(f"  {i}. {title}{location}")
         else:
             print(f"\nNo results found. Reason: {result.get('reason', 'Unknown')}")
-            print(f"Response: {result['response']}")
+            if result.get('reason') and 'injection' in result['reason'].lower():
+                print("Your query appears to contain instructions that could interfere with normal operation.")
+                print("Please try a straightforward question about Sundt projects.")
+            else:
+                print(f"Response: {result['response']}")
     
     def _handle_awards_query(self, query):
-        """Process a query for the Awards agent"""
         print(f"\nSearching for awards related to: {query}")
         print("Processing...")
         
@@ -109,19 +118,24 @@ class SundtCLI:
             print("\nRESPONSE:")
             print(result["response"])
             
-            # List the awards found
+            # Show the awards that were found
             if result.get("awards"):
                 print("\nAwards found:")
                 for i, award in enumerate(result["awards"], 1):
                     title = award.get('title', 'Untitled')
                     org = f" ({award.get('organization', '')})" if 'organization' in award else ""
-                    print(f"  {i}. {title}{org}")
+                    year = f" - {award.get('year', award.get('date', ''))}" if award.get('year') or award.get('date') else ""
+                    print(f"  {i}. {title}{org}{year}")
         else:
             print(f"\nNo results found. Reason: {result.get('reason', 'Unknown')}")
-            print(f"Response: {result['response']}")
+            if result.get('reason') and 'injection' in result['reason'].lower():
+                print("Your query appears to contain instructions that could interfere with normal operation.")
+                print("Please try a straightforward question about Sundt awards.")
+            else:
+                print(f"Response: {result['response']}")
 
 if __name__ == "__main__":
-    # Check if OpenAI API key is set
+    # Check for OpenAI API key
     if not os.getenv("OPENAI_API_KEY"):
         print("ERROR: OPENAI_API_KEY environment variable not set.")
         print("Please create a .env file with your OpenAI API key:")

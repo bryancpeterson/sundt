@@ -1,6 +1,8 @@
 requests
 beautifulsoup4
+numpy
 langchain
+langchain-core
 langchain-openai
 openai
 python-dotenv

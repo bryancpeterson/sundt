@@ -7,8 +7,7 @@ import time
 
 class LocalVectorSearchEngine:
     """
-    Vector-based search engine for Sundt data using local embeddings
-    Uses sentence-transformers for generating embeddings locally without API costs
+    Local vector search using sentence-transformers - keeps everything offline and fast
     """
     
     def __init__(self, data_dir="data", use_cached_embeddings=True):
@@ -17,17 +16,16 @@ class LocalVectorSearchEngine:
         self.awards_file = os.path.join(data_dir, "awards.json")
         self.embeddings_file = os.path.join(data_dir, "local_embeddings.json")
         
-        # Import the sentence_transformers library (only when needed)
-        # This allows the file to be imported even if the library isn't installed yet
+        # Import sentence-transformers only when we need it
         try:
             from sentence_transformers import SentenceTransformer
-            self.model = SentenceTransformer('all-MiniLM-L6-v2')  # Small, fast model (384 dimensions)
+            self.model = SentenceTransformer('all-MiniLM-L6-v2')  # Small, fast, decent quality
             self.embedding_available = True
         except ImportError:
-            print("Warning: sentence-transformers library not installed. Run: pip install sentence-transformers==2.2.2")
+            print("Warning: sentence-transformers library not working properly, try using sentence-transformers==2.2.2")
             self.embedding_available = False
         
-        # Load data
+        # Load data first
         self.projects = self._load_json_data(self.projects_file, "projects")
         self.awards = self._load_json_data(self.awards_file, "awards")
         
@@ -35,11 +33,10 @@ class LocalVectorSearchEngine:
         if self.embedding_available:
             self.embeddings = self._load_or_generate_embeddings(use_cached_embeddings)
         else:
-            # Dummy embeddings for testing if library isn't available
+            # Dummy embeddings for when library isn't available
             self.embeddings = {"projects": np.array([]), "awards": np.array([]), "created_at": 0}
     
     def _load_json_data(self, file_path: str, key: str) -> List[Dict[str, Any]]:
-        """Load JSON data from file"""
         if not os.path.exists(file_path):
             print(f"Warning: {file_path} does not exist")
             return []
@@ -53,15 +50,14 @@ class LocalVectorSearchEngine:
             return []
     
     def _load_or_generate_embeddings(self, use_cached=True) -> Dict[str, Any]:
-        """Load existing embeddings or generate new ones"""
-        # Check if embeddings already exist and we should use them
+        # Try to load existing embeddings first
         if use_cached and os.path.exists(self.embeddings_file):
             try:
                 with open(self.embeddings_file, 'r', encoding='utf-8') as f:
                     print(f"Loading cached embeddings from {self.embeddings_file}")
                     data = json.load(f)
                     
-                    # Convert lists back to numpy arrays for efficiency
+                    # Convert back to numpy arrays for efficient computation
                     data["projects"] = np.array(data["projects"])
                     data["awards"] = np.array(data["awards"])
                     
@@ -78,34 +74,32 @@ class LocalVectorSearchEngine:
             "created_at": time.time()
         }
         
-        # Generate project embeddings
+        # Process projects
         project_texts = []
         for project in self.projects:
             text = self._prepare_text_for_embedding(project, "project")
             project_texts.append(text)
         
-        # Batch processing for efficiency with normalize_embeddings=True for optimization
+        # Batch encode for efficiency, normalize for cosine similarity
         print(f"Generating embeddings for {len(project_texts)} projects...")
         embeddings["projects"] = self.model.encode(project_texts, normalize_embeddings=True)
         
-        # Generate award embeddings
+        # Process awards
         award_texts = []
         for award in self.awards:
             text = self._prepare_text_for_embedding(award, "award")
             award_texts.append(text)
         
-        # Batch processing for efficiency with normalize_embeddings=True for optimization
         print(f"Generating embeddings for {len(award_texts)} awards...")
         embeddings["awards"] = self.model.encode(award_texts, normalize_embeddings=True)
         
-        # Convert numpy arrays to lists for JSON serialization
+        # Save to cache for next time
         serializable_embeddings = {
             "projects": embeddings["projects"].tolist(),
             "awards": embeddings["awards"].tolist(),
             "created_at": embeddings["created_at"]
         }
         
-        # Save embeddings to file
         os.makedirs(self.data_dir, exist_ok=True)
         with open(self.embeddings_file, 'w', encoding='utf-8') as f:
             json.dump(serializable_embeddings, f)
@@ -114,9 +108,8 @@ class LocalVectorSearchEngine:
         return embeddings
     
     def _prepare_text_for_embedding(self, item: Dict[str, Any], item_type: str) -> str:
-        """Prepare text representation of an item for embedding"""
+        # Create searchable text representation for each item
         if item_type == "project":
-            # Combine relevant fields for projects
             parts = [
                 f"Title: {item.get('title', '')}",
                 f"Description: {item.get('description', item.get('overview', ''))}",
@@ -124,7 +117,7 @@ class LocalVectorSearchEngine:
                 f"Client: {item.get('client', '')}"
             ]
             
-            # Add features if available
+            # Add features if they exist
             if "features" in item and item["features"]:
                 features = item["features"]
                 if isinstance(features, list):
@@ -133,7 +126,7 @@ class LocalVectorSearchEngine:
                     features_text = str(features)
                 parts.append(f"Features: {features_text}")
             
-            # Add specialties if available
+            # Add specialties too
             if "specialties" in item and item["specialties"]:
                 specialties = item["specialties"]
                 if isinstance(specialties, list):
@@ -143,7 +136,6 @@ class LocalVectorSearchEngine:
                 parts.append(f"Specialties: {specialties_text}")
             
         elif item_type == "award":
-            # Combine relevant fields for awards
             parts = [
                 f"Title: {item.get('title', '')}",
                 f"Organization: {item.get('organization', '')}",
@@ -152,91 +144,69 @@ class LocalVectorSearchEngine:
                 f"Year: {item.get('year', item.get('date', ''))}"
             ]
             
-            # Add related projects if available
+            # Include related projects if available
             if "projects" in item and item["projects"]:
                 projects = item["projects"]
                 if isinstance(projects, list):
                     project_titles = [p.get("title", "") for p in projects]
                     parts.append(f"Projects: {', '.join(project_titles)}")
         
-        # Join all parts with newlines and clean up any empty lines
+        # Clean up and join
         text = "\n".join(part for part in parts if part.strip())
         return text
     
-    def search_projects(self, query: str, limit: int = 10, threshold: float = 0.5) -> List[Dict[str, Any]]:
-        """Search for projects using vector similarity"""
+    def search_projects(self, query: str, limit: int = 10, threshold: float = 0.3) -> List[Dict[str, Any]]:
         if not self.embedding_available:
             print("Warning: Vector search unavailable without sentence-transformers library")
             return []
             
-        # Get embedding for query and normalize it
+        # Get query embedding (normalized for cosine similarity)
         query_vector = self.model.encode(query, normalize_embeddings=True)
         
-        # Calculate similarity with all projects using vectorized operations
-        # Since both query and document vectors are normalized, dot product equals cosine similarity
+        # Compute similarity with all projects (dot product = cosine similarity when normalized)
         similarities = np.dot(query_vector, self.embeddings["projects"].T)
         
-        # Create an array of indices
+        # Get indices and sort by similarity
         indices = np.arange(len(similarities))
-        
-        # Create list of (index, similarity) tuples and sort by similarity (descending)
         project_scores = list(zip(indices, similarities))
         project_scores.sort(key=lambda x: x[1], reverse=True)
         
-        # Filter by threshold and get top results
+        # Filter and format results
         results = []
         for i, score in project_scores:
             if score >= threshold and len(results) < limit:
                 project = self.projects[i].copy()
-                project['_score'] = float(score)  # Add score for debugging
-                project['_rank'] = len(results) + 1  # Add rank for presentation
+                project['_score'] = float(score)  # For debugging/ranking
+                project['_rank'] = len(results) + 1
                 results.append(project)
         
         return results
     
-    def search_awards(self, query: str, limit: int = 10, threshold: float = 0.5) -> List[Dict[str, Any]]:
-        """Search for awards using vector similarity"""
+    def search_awards(self, query: str, limit: int = 10, threshold: float = 0.3) -> List[Dict[str, Any]]:
         if not self.embedding_available:
             print("Warning: Vector search unavailable without sentence-transformers library")
             return []
             
-        # Get embedding for query and normalize it
         query_vector = self.model.encode(query, normalize_embeddings=True)
-        
-        # Calculate similarity with all awards using vectorized operations
-        # Since both query and document vectors are normalized, dot product equals cosine similarity
         similarities = np.dot(query_vector, self.embeddings["awards"].T)
         
-        # Create an array of indices
         indices = np.arange(len(similarities))
-        
-        # Create list of (index, similarity) tuples and sort by similarity (descending)
         award_scores = list(zip(indices, similarities))
         award_scores.sort(key=lambda x: x[1], reverse=True)
         
-        # Filter by threshold and get top results
         results = []
         for i, score in award_scores:
             if score >= threshold and len(results) < limit:
                 award = self.awards[i].copy()
-                award['_score'] = float(score)  # Add score for debugging
-                award['_rank'] = len(results) + 1  # Add rank for presentation
+                award['_score'] = float(score)
+                award['_rank'] = len(results) + 1
                 results.append(award)
         
         return results
     
-    def search(self, query: str, type: str = "all", limit: int = 10, threshold: float = 0.5) -> Dict[str, Union[List[Dict[str, Any]], int]]:
+    def search(self, query: str, type: str = "all", limit: int = 10, threshold: float = 0.3) -> Dict[str, Union[List[Dict[str, Any]], int]]:
         """
-        Search for projects and/or awards matching the query
-        
-        Args:
-            query: Search terms
-            type: "projects", "awards", or "all"
-            limit: Maximum number of results to return for each type
-            threshold: Minimum similarity score (0-1) to include in results
-            
-        Returns:
-            Dictionary with results and timing info
+        Main search interface - handles projects, awards, or both
         """
         start_time = time.time()
         
@@ -255,18 +225,17 @@ class LocalVectorSearchEngine:
             results["awards"] = awards
             results["award_count"] = len(awards)
         
-        # Add timing information
         results["execution_time"] = time.time() - start_time
             
         return results
 
 
-# Example usage
+# Quick test when running directly
 if __name__ == "__main__":
     print("Initializing local vector search engine...")
     engine = LocalVectorSearchEngine()
     
-    # Test searches
+    # Some test queries to show it works
     test_queries = [
         "water treatment facilities in Arizona",
         "transportation projects with bridges",
@@ -289,7 +258,6 @@ if __name__ == "__main__":
                 print(f"     Location: {project['location']}")
             if "_score" in project:
                 print(f"     Score: {project['_score']:.3f}")
-                print(f"     Rank: {project['_rank']}")
         
         print("\nTop Awards:")
         for i, award in enumerate(results.get("awards", [])):
@@ -298,4 +266,3 @@ if __name__ == "__main__":
                 print(f"     Organization: {award['organization']}")
             if "_score" in award:
                 print(f"     Score: {award['_score']:.3f}")
-                print(f"     Rank: {award['_rank']}")

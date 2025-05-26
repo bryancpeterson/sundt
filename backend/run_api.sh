@@ -1,8 +1,3 @@
-#!/bin/bash
-# Make sure you have installed all requirements
-# pip install -r requirements.txt
-
-# Make sure you have OpenAI API key in .env file
 if [ ! -f .env ]; then
     echo "ERROR: .env file not found. Creating template .env file."
     echo "OPENAI_API_KEY=your_api_key_here" > .env
