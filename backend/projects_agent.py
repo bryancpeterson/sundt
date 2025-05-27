@@ -251,19 +251,26 @@ class ProjectsAgent:
         return keywords
     
     def _hybrid_search(self, query, limit=15):
-        # Combine vector search with keyword matching for better relevance
+        # Combine vector search with keyword matching + term frequency penalties
         vector_results = self.search_engine.search_projects(query, limit=limit)
         keywords = self._extract_keywords(query)
-        
+    
         if not keywords or not vector_results:
             return vector_results
-        
-        # Boost scores based on keyword matches in different fields
+    
+        # Calculate term frequencies once (cached after first run)
+        if not hasattr(self, '_term_frequencies'):
+            data_items = self.search_engine.projects
+            self._term_frequencies = self._calculate_term_frequencies(data_items)
+    
+        # Apply keyword boosting with frequency penalties
         for result in vector_results:
-            keyword_matches = 0
+            total_boost = 0
             text_fields = ['title', 'description', 'overview', 'location', 'client']
-            
+        
             for keyword in keywords:
+                # Calculate base keyword matches 
+                keyword_matches = 0
                 for field in text_fields:
                     if field in result and result[field] and isinstance(result[field], str):
                         field_text = result[field].lower()
@@ -276,11 +283,17 @@ class ProjectsAgent:
                             else:
                                 keyword_matches += 1
             
-            # Apply boost to base vector score
-            boost_factor = 1 + (keyword_matches * 0.1)
-            result['_score'] = result.get('_score', 0) * boost_factor
-            result['_keyword_matches'] = keyword_matches
+                # Apply term frequency penalty to reduce common word boost
+                if keyword_matches > 0:
+                    penalty = self._get_term_penalty(keyword, self._term_frequencies)
+                    penalized_boost = keyword_matches * penalty
+                    total_boost += penalized_boost
         
+            # Apply total boost (reduced from 0.1 to 0.05 to be less aggressive)
+            boost_factor = 1 + (total_boost * 0.05)
+            result['_score'] = result.get('_score', 0) * boost_factor
+            result['_keyword_matches'] = total_boost  # Store for debugging
+    
         # Re-sort by adjusted scores
         vector_results.sort(key=lambda x: x.get('_score', 0), reverse=True)
         return vector_results[:limit]
@@ -374,6 +387,52 @@ class ProjectsAgent:
             footer = "\n\nI couldn't find specific Sundt projects matching your query in our database."
             
         return prefix + response + footer
+    
+    def _calculate_term_frequencies(self, data_items):
+        # Calculate how often each term appears across all items
+        term_counts = {}
+        total_items = len(data_items)
+    
+        # Count how many items contain each term
+        for item in data_items:
+            # Get all text from the item
+            text_fields = []
+            if 'title' in item:
+                text_fields.append(item['title'])
+            if 'description' in item:
+                text_fields.append(item['description'])
+            if 'location' in item:
+                text_fields.append(item['location'])
+            if 'client' in item:
+                text_fields.append(item['client'])
+        
+            # Extract unique terms from this item
+            item_terms = set()
+            for field_text in text_fields:
+                if field_text:
+                    words = re.findall(r'\b\w+\b', field_text.lower())
+                    item_terms.update(word for word in words if len(word) > 2)
+        
+            # Count each unique term once per item
+            for term in item_terms:
+                term_counts[term] = term_counts.get(term, 0) + 1
+    
+        # Convert to frequencies (what % of items contain this term)
+        term_frequencies = {}
+        for term, count in term_counts.items():
+            term_frequencies[term] = count / total_items
+    
+        return term_frequencies
+
+    def _get_term_penalty(self, term, term_frequencies):
+        # Calculate penalty for common terms (TF-IDF style)
+        frequency = term_frequencies.get(term, 0.01)  # Default to rare if not found
+    
+        # Penalty formula: more common = less boost
+        # 0.01 frequency (1% of docs) = 1.0 multiplier (full boost)
+        # 0.50 frequency (50% of docs) = 0.2 multiplier (much less boost)
+        penalty = min(1.0, 0.1 / frequency)
+        return penalty
     
     def get_metrics(self) -> Dict[str, Any]:
         return self._load_metrics()
