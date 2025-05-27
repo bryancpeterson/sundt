@@ -79,7 +79,7 @@ cd frontend && npm run dev
     else:
         with open("start.sh", 'w') as f:
             f.write(f"""#!/bin/bash
-cd backend && {python_cmd} api.py &
+cd backend && ../{python_cmd} api.py &
 sleep 2
 cd frontend && npm run dev
 """)
