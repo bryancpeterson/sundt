@@ -70,4 +70,17 @@ Go to the **Search** page and begin querying.
 
 ---
 
+## Manual Run
+
+If Start script fails to run on windows, the program can be manually run.
+```bash
+cd sundt-master/backend
+pip install -r requirements.txt
+python api.py
+```
+```bash
+cd sundt-master/frontend
+npm run dev
+```
+---
 Built for technical demonstration purposes
