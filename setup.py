@@ -71,7 +71,7 @@ NVIDIA_API_KEY=[add]
     if is_windows:
         with open("start.bat", 'w') as f:
             f.write(f"""@echo off
-start "Backend" cmd /k "cd backend && {python_cmd} api.py"
+start "Backend" cmd /k "cd backend && ..\\{python_cmd} api.py"
 timeout 2 > nul
 cd frontend && npm run dev
 """)
