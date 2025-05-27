@@ -6,7 +6,7 @@ AI-powered search system for Sundt Construction projects and awards data.
 
 ### 1. Download & Setup
 ```bash
-cd sundt-rag
+cd sundt-master
 python setup.py
 ```
 
