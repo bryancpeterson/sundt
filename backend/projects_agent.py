@@ -127,25 +127,49 @@ class ProjectsAgent:
     def _sanitize_input(self, query: str) -> tuple:
         # Basic prompt injection detection patterns
         injection_patterns = [
-            r'ignore previous instructions',
-            r'disregard (?:all|previous)',
-            r'forget (?:all|your|previous)',
-            r'new prompt:',
-            r'system prompt:',
-            r'new instructions:',
-            r'you are now',
-            r'you will be',
-            r'your new role',
-        ]
+        # Ignore variations 
+        r'ignore\s+(?:all\s+)?(?:previous\s+)?instructions?',
+        r'ignore\s+(?:all\s+)?(?:your\s+)?(?:previous\s+)?(?:instructions?|prompts?|rules?)',
         
+        # Disregard variations  
+        r'disregard\s+(?:all\s+)?(?:previous\s+)?(?:instructions?|prompts?|rules?)',
+        r'disregard\s+(?:all\s+)?(?:your\s+)?(?:previous\s+)?(?:instructions?|prompts?|rules?)',
+        
+        # Forget variations
+        r'forget\s+(?:all\s+)?(?:your\s+)?(?:previous\s+)?(?:instructions?|prompts?|rules?)',
+        r'forget\s+(?:everything|what)\s+(?:you\s+)?(?:know|learned)',
+        
+        # New instruction attempts
+        r'new\s+(?:prompt|instructions?|rules?):?',
+        r'different\s+(?:prompt|instructions?|rules?):?',
+        r'updated?\s+(?:prompt|instructions?|rules?):?',
+        
+        # System override attempts
+        r'system\s+(?:prompt|instructions?|message):?',
+        r'override\s+(?:system|security|safety)',
+        r'bypass\s+(?:security|safety|filters?)',
+        
+        # Role manipulation 
+        r'you\s+(?:are\s+now|will\s+be|should\s+be|must\s+be)\s+(?:a|an)?\s*\w+',
+        r'(?:your\s+)?(?:new\s+)?role\s+(?:is|will\s+be|should\s+be)',
+        r'act\s+(?:as|like)\s+(?:a|an)?\s*\w+',
+        r'pretend\s+(?:to\s+be|you\s+are)',
+        
+        # Direct override language
+        r'instead\s+of\s+(?:answering|responding|following)',
+        r'rather\s+than\s+(?:answering|responding|following)',
+    ]
+    
+        # Check for injection patterns
         for pattern in injection_patterns:
             if re.search(pattern, query, re.IGNORECASE):
+                # Don't modify the query for metrics but flag as injection
                 return (query, True)
-        
-        # Basic cleanup
+    
+        # Basic sanitization (keep your existing logic)
         sanitized = re.sub(r'[^\w\s\.,\-\?:;\'\"()]', ' ', query)
         sanitized = re.sub(r'\s+', ' ', sanitized).strip()
-        
+    
         return (sanitized, False)
     
     def _format_project_info(self, project, index):
